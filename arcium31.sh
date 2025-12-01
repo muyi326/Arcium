@@ -1072,7 +1072,7 @@ setup_arx_node() {
         local funding_success=false
         
         # 领水重试逻辑
-        local max_retry_hours=24  # 最大重试24小时
+        local max_retry_hours=72  # 最大重试24小时
         local retry_count=0
         local retry_interval=3600  # 1小时 = 3600秒
         
