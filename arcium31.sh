@@ -1159,7 +1159,7 @@ setup_arx_node() {
                 retry_count=$((retry_count + 1))
                 if [ $retry_count -lt $max_retry_hours ]; then
                     warning "资金获取失败，等待 $((retry_interval / 60)) 分钟后重试... ($retry_count/$max_retry_hours)"
-                    info "下次重试时间: $(date -d "+$((retry_interval / 60)) minutes" '+%H:%M:%S')"
+                    info "下次重试时间: $(date -v "+$((retry_interval / 60)) minutes" '+%H:%M:%S')"
                     
                     # 显示倒计时
                     for ((i=retry_interval; i>0; i--)); do
