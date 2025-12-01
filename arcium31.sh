@@ -123,15 +123,15 @@ install_rust() {
         success "Rust 安装完成: $(rustc --version)"
     fi
     
-    # 设置 Rust 镜像
+    # 设置 Rust 镜像 - 修复版本
     log "设置 Rust 镜像..."
     mkdir -p ~/.cargo
     cat > ~/.cargo/config.toml << 'EOF'
 [source.crates-io]
-replace-with = 'ustc'
+replace-with = 'tuna'
 
-[source.ustc]
-registry = "git://mirrors.ustc.edu.cn/crates.io-index"
+[source.tuna]
+registry = "https://mirrors.tuna.tsinghua.edu.cn/git/crates.io-index.git"
 
 [net]
 git-fetch-with-cli = true
