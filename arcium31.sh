@@ -1071,97 +1071,143 @@ setup_arx_node() {
         log "节点地址余额不足，开始获取资金..."
         local funding_success=false
         
-        # 方法1: 尝试官方领水
-        log "尝试官方领水..."
-        if solana airdrop 5 $node_pubkey -u devnet 2>/dev/null; then
-            success "官方领水成功，等待到账..."
-            funding_success=true
-        else
-            warning "官方领水失败，尝试集群转账..."
+        # 领水重试逻辑
+        local max_retry_hours=24  # 最大重试24小时
+        local retry_count=0
+        local retry_interval=3600  # 1小时 = 3600秒
+        
+        while [ $retry_count -lt $max_retry_hours ] && (( $(echo "$node_balance < 2.5" | bc -l) )); do
+            log "尝试获取资金 (第 $((retry_count+1)) 次尝试，最多 $max_retry_hours 次)..."
             
-            # 方法2: 从集群所有者转账
-            local CLUSTER_DIR="$HOME/arcium-cluster-setup"
-            if [[ -f "$CLUSTER_DIR/cluster-owner-keypair.json" ]]; then
-                log "从集群所有者给节点转账 4 SOL..."
+            # 方法1: 尝试官方领水
+            log "尝试官方领水..."
+            if solana airdrop 5 $node_pubkey -u devnet 2>/dev/null; then
+                success "官方领水请求已提交，等待到账..."
+                funding_success=true
                 
-                # 检查集群所有者余额
-                local cluster_owner_address=$(solana address --keypair "$CLUSTER_DIR/cluster-owner-keypair.json")
-                local cluster_balance=$(solana balance $cluster_owner_address --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
-                success "集群所有者余额: $cluster_balance SOL"
+                # 等待资金到账
+                local max_checks=30  # 增加检查次数
+                local check_count=0
+                local funds_received=false
                 
-                if (( $(echo "$cluster_balance >= 4.5" | bc -l) )); then
-                    if solana transfer $node_pubkey 4 --keypair "$CLUSTER_DIR/cluster-owner-keypair.json" --url "$RPC_ENDPOINT" --allow-unfunded-recipient 2>/dev/null; then
-                        success "集群转账成功！"
-                        funding_success=true
+                while [ $check_count -lt $max_checks ]; do
+                    sleep 20  # 每20秒检查一次
+                    node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
+                    check_count=$((check_count + 1))
+                    
+                    if (( $(echo "$node_balance >= 3.5" | bc -l) )); then
+                        success "节点地址资金到账: $node_balance SOL"
+                        funds_received=true
+                        break
                     else
-                        error "集群转账失败"
+                        info "等待资金到账... ($check_count/$max_checks) 当前余额: $node_balance SOL"
                     fi
+                done
+                
+                if [ "$funds_received" = true ]; then
+                    break  # 资金到账，退出循环
                 else
-                    warning "集群所有者余额不足 ($cluster_balance SOL)，无法转账"
+                    warning "领水请求已发送但资金未到账，可能网络延迟"
                 fi
             else
-                warning "未找到集群所有者密钥文件"
+                warning "官方领水失败"
             fi
-        fi
-        
-        # 等待资金到账
-        if [ "$funding_success" = true ]; then
-            success "资金请求已提交，等待到账..."
             
-            # 等待并检查余额
-            local max_checks=15
-            local check_count=0
-            
-            while [ $check_count -lt $max_checks ]; do
-                sleep 10
-                node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
-                check_count=$((check_count + 1))
-                
-                if (( $(echo "$node_balance >= 3.5" | bc -l) )); then
-                    success "节点地址资金到账: $node_balance SOL"
-                    break
+            # 方法2: 尝试从集群所有者转账（仅在第一次尝试时）
+            if [ $retry_count -eq 0 ] && [ "$funding_success" = false ]; then
+                local CLUSTER_DIR="$HOME/arcium-cluster-setup"
+                if [[ -f "$CLUSTER_DIR/cluster-owner-keypair.json" ]]; then
+                    log "从集群所有者给节点转账 4 SOL..."
+                    
+                    # 检查集群所有者余额
+                    local cluster_owner_address=$(solana address --keypair "$CLUSTER_DIR/cluster-owner-keypair.json")
+                    local cluster_balance=$(solana balance $cluster_owner_address --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
+                    success "集群所有者余额: $cluster_balance SOL"
+                    
+                    if (( $(echo "$cluster_balance >= 4.5" | bc -l) )); then
+                        if solana transfer $node_pubkey 4 --keypair "$CLUSTER_DIR/cluster-owner-keypair.json" --url "$RPC_ENDPOINT" --allow-unfunded-recipient 2>/dev/null; then
+                            success "集群转账成功！等待到账..."
+                            funding_success=true
+                            
+                            # 等待转账到账
+                            local transfer_checks=0
+                            while [ $transfer_checks -lt 15 ]; do
+                                sleep 10
+                                node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
+                                transfer_checks=$((transfer_checks + 1))
+                                
+                                if (( $(echo "$node_balance >= 3.5" | bc -l) )); then
+                                    success "集群转账到账: $node_balance SOL"
+                                    break 2  # 跳出两层循环
+                                else
+                                    info "等待集群转账到账... ($transfer_checks/15) 当前余额: $node_balance SOL"
+                                fi
+                            done
+                        else
+                            error "集群转账失败"
+                        fi
+                    else
+                        warning "集群所有者余额不足 ($cluster_balance SOL)，无法转账"
+                    fi
                 else
-                    info "等待资金到账... ($check_count/$max_checks) 当前余额: $node_balance SOL"
+                    warning "未找到集群所有者密钥文件"
                 fi
-            done
-            
-            if (( $(echo "$node_balance < 3.5" | bc -l) )); then
-                warning "资金未完全到账，当前余额: $node_balance SOL"
-                info "可能因网络延迟，继续等待或需要手动处理"
             fi
-        else
-            # 所有自动方法都失败，提示手动领水
-            warning "所有自动获取资金方法都失败了"
-            info "请手动访问以下网站领水:"
-            info "https://faucet.solana.com"
-            info "节点地址: $node_pubkey"
-            info "领取至少 5 SOL 后按回车键继续..."
-            read -r </dev/tty
             
-            # 手动领水后等待余额到账
-            log "等待手动领水到账..."
-            local max_waits=30
-            local wait_count=0
-            
-            while [ $wait_count -lt $max_waits ]; do
-                sleep 20
-                node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
-                wait_count=$((wait_count + 1))
-                
-                echo "检查余额... ($wait_count/$max_waits) 当前余额: $node_balance SOL" >&2
-                
-                if (( $(echo "$node_balance >= 3.5" | bc -l) )); then
-                    success "领水到账: $node_balance SOL"
-                    break
+            # 如果仍然没有资金，等待1小时后重试
+            if (( $(echo "$node_balance < 2.5" | bc -l) )); then
+                retry_count=$((retry_count + 1))
+                if [ $retry_count -lt $max_retry_hours ]; then
+                    warning "资金获取失败，等待 $((retry_interval / 60)) 分钟后重试... ($retry_count/$max_retry_hours)"
+                    info "下次重试时间: $(date -d "+$((retry_interval / 60)) minutes" '+%H:%M:%S')"
+                    
+                    # 显示倒计时
+                    for ((i=retry_interval; i>0; i--)); do
+                        printf "\r等待下次重试: %02d:%02d" $((i/60)) $((i%60))
+                        sleep 1
+                    done
+                    echo
+                    
+                    # 重新检查余额（可能在等待期间手动领水成功）
+                    node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
+                    if (( $(echo "$node_balance >= 2.5" | bc -l) )); then
+                        success "检测到余额已充足: $node_balance SOL"
+                        break
+                    fi
+                else
+                    error "已达到最大重试次数 ($max_retry_hours 小时)，资金获取失败"
+                    info "请手动访问以下网站领水:"
+                    info "https://faucet.solana.com"
+                    info "节点地址: $node_pubkey"
+                    info "领取至少 5 SOL 后按回车键继续..."
+                    read -r </dev/tty
+                    
+                    # 手动领水后等待余额到账
+                    log "等待手动领水到账..."
+                    local max_waits=30
+                    local wait_count=0
+                    
+                    while [ $wait_count -lt $max_waits ]; do
+                        sleep 20
+                        node_balance=$(solana balance $node_pubkey --url "$RPC_ENDPOINT" 2>/dev/null | cut -d' ' -f1 || echo "0")
+                        wait_count=$((wait_count + 1))
+                        
+                        echo "检查余额... ($wait_count/$max_waits) 当前余额: $node_balance SOL" >&2
+                        
+                        if (( $(echo "$node_balance >= 3.5" | bc -l) )); then
+                            success "领水到账: $node_balance SOL"
+                            break
+                        fi
+                    done
+                    
+                    if (( $(echo "$node_balance < 3.5" | bc -l) )); then
+                        warning "领水未到账，当前余额: $node_balance SOL"
+                        info "请确认已成功领水，按回车键强制继续..."
+                        read -r </dev/tty
+                    fi
                 fi
-            done
-            
-            if (( $(echo "$node_balance < 3.5" | bc -l) )); then
-                warning "领水未到账，当前余额: $node_balance SOL"
-                info "请确认已成功领水，按回车键强制继续..."
-                read -r </dev/tty
             fi
-        fi
+        done
     else
         success "节点地址余额充足，跳过领水"
     fi
