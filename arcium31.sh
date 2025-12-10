@@ -1381,7 +1381,7 @@ setup_arx_node() {
         log "使用公网 IP 地址: $public_ip"
 
         # 改进的错误处理和重试逻辑
-        local max_retries=3
+        local max_retries=100
         local retry_count=0
         local init_success=false
 
